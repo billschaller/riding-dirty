@@ -1,0 +1,7 @@
+Hook object destructor to clean up the dirty flag entry
+Hook get_property_p to handle cases where property zval is modified directly
+Hook write_dimension?
+Handle more error cases nicely
+Write uninstrument_object func?
+Add logic in instrument_object to determine if the object can be safely instrumented, or if it has embedded objects that may change without setting the dirty flag
+Much moar tests
