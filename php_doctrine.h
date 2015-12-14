@@ -10,6 +10,8 @@ extern zend_module_entry doctrine_module_entry;
 #define PHP_DOCTRINE_VERSION "1.0"
 #define PHP_DOCTRINE_EXTNAME "doctrine"
 
+extern zend_class_entry *doctrine_exception_ptr;
+
 ZEND_BEGIN_MODULE_GLOBALS(doctrine)
 	HashTable *object_dirty_flags;
 ZEND_END_MODULE_GLOBALS(doctrine)
@@ -21,8 +23,9 @@ PHP_MSHUTDOWN_FUNCTION(doctrine);
 PHP_RINIT_FUNCTION(doctrine);
 PHP_RSHUTDOWN_FUNCTION(doctrine);
 
-typedef void(*doctrine_write_property_fptr)(zval *, zval *, zval *, void **);
-
 #define D_G(v) ZEND_MODULE_GLOBALS_ACCESSOR(doctrine, v)
+
+#define DOCTRINE_THROW(msg) zend_throw_exception(doctrine_exception_ptr, msg, 0); return;
+
 
 #endif

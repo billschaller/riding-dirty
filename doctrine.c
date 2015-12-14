@@ -10,8 +10,15 @@
 #include "zend_hash.h"
 
 void doctrine_write_property(zval *object, zval *member, zval *value, void **cache_slot);
+void doctrine_dtor_obj(zend_object *object);
+zval *doctrine_read_property(zval *object, zval *member, int type, void **cache_slot, zval *rv);
+zval *doctrine_get_property_ptr_ptr(zval *object, zval *member, int type, void **cache_slot);
 
 ZEND_DECLARE_MODULE_GLOBALS(doctrine)
+
+static const zend_function_entry doctrine_exception_functions[] = {
+	PHP_FE_END
+};
 
 PHP_FUNCTION(instrument_object);
 PHP_FUNCTION(is_dirty);
@@ -40,14 +47,31 @@ static zend_function_entry doctrine_functions[] = {
 
 ZEND_GET_MODULE(doctrine)
 
+static zend_object_handlers *zend_std_obj_handlers;
+zend_class_entry *doctrine_exception_ptr;
+static zend_object_handlers doctrine_object_handlers;
+
 static void php_doctrine_init_globals(zend_doctrine_globals *doctrine_globals)
 {
-	doctrine_globals->object_dirty_flags = NULL;
+	doctrine_globals->object_dirty_flags = NULL;	
 }
 
 PHP_MINIT_FUNCTION(doctrine)
 {
 	ZEND_INIT_MODULE_GLOBALS(doctrine, php_doctrine_init_globals, NULL);
+	zend_std_obj_handlers = zend_get_std_object_handlers();
+
+	memcpy(&doctrine_object_handlers, zend_get_std_object_handlers(), sizeof(zend_object_handlers));
+	doctrine_object_handlers.write_property = doctrine_write_property;
+	doctrine_object_handlers.dtor_obj = doctrine_dtor_obj;
+	doctrine_object_handlers.get_property_ptr_ptr = doctrine_get_property_ptr_ptr;
+	doctrine_object_handlers.read_property = doctrine_read_property;
+
+	zend_class_entry _doctrine_entry;
+
+	INIT_CLASS_ENTRY(_doctrine_entry, "DoctrineException", doctrine_exception_functions);
+	doctrine_exception_ptr = zend_register_internal_class_ex(&_doctrine_entry, zend_ce_exception);
+
 	return SUCCESS;
 }
 
@@ -88,12 +112,10 @@ zend_module_entry doctrine_module_entry = {
 	STANDARD_MODULE_PROPERTIES_EX
 };
 
-
 PHP_FUNCTION(instrument_object)
 {
 	zval *argument;
 	zend_object *obj;
-	zend_object_handlers *handlers;
 
 	if (!D_G(object_dirty_flags)) {
 		ALLOC_HASHTABLE(D_G(object_dirty_flags));
@@ -101,22 +123,27 @@ PHP_FUNCTION(instrument_object)
 	}
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "o", &argument) == FAILURE) {
-		return;
+		RETURN_FALSE;
 	}
 
 	obj = Z_OBJ_P(argument);
 
 	if (zend_hash_index_exists(D_G(object_dirty_flags), obj->handle)) {
-		return;
+		// Object is already instrumented
+		RETURN_TRUE;
+	}
+	
+	if (obj->handlers != zend_get_std_object_handlers()) {
+		// Object has nonstandard handlers.
+		DOCTRINE_THROW("The object passed is not a standard object and cannot be safely instrumented.");
 	}
 
-	handlers = obj->handlers;
-	handlers->write_property = doctrine_write_property;
+	obj->handlers = &doctrine_object_handlers;
 
 	zval flag;
 	ZVAL_BOOL(&flag, 0);
 	zend_hash_index_add(D_G(object_dirty_flags), obj->handle, &flag);
-	return;
+	RETURN_TRUE;
 }
 
 PHP_FUNCTION(is_dirty)
@@ -124,16 +151,19 @@ PHP_FUNCTION(is_dirty)
 	zval *argument;
 	
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "o", &argument) == FAILURE) {
-		return;
+		// Not an object
+		RETURN_FALSE;
 	}
 
 	if (!D_G(object_dirty_flags)) {
+		// No objects have been instrumented
 		RETURN_FALSE;
 	}
 	
 	zval *flag;
 	flag = zend_hash_index_find(D_G(object_dirty_flags), Z_OBJ_P(argument)->handle);
 	if (flag == NULL) {
+		// Object is not instrumented
 		RETURN_FALSE;
 	}
 	RETURN_ZVAL(flag, 1, 0);
@@ -141,21 +171,24 @@ PHP_FUNCTION(is_dirty)
 
 PHP_FUNCTION(reset_dirty_flag)
 {
+	// Reset the object's dirty flag
 	zval *argument;
 	zend_object *obj;
-	zend_object_handlers *handlers;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "o", &argument) == FAILURE) {
+		// Not an object
 		return;
 	}
 
 	if (!D_G(object_dirty_flags)) {
+		// No objects have been instrumented
 		RETURN_FALSE;
 	}
 
 	obj = Z_OBJ_P(argument);
 
 	if (!zend_hash_index_exists(D_G(object_dirty_flags), obj->handle)) {
+		// Object is not instrumented.
 		RETURN_FALSE;
 	}
 	
@@ -165,10 +198,51 @@ PHP_FUNCTION(reset_dirty_flag)
 	RETURN_TRUE;
 }
 
-void doctrine_write_property(zval *object, zval *member, zval *value, void **cache_slot)
+void set_object_dirty(zval *object)
 {
 	zval flag;
 	ZVAL_BOOL(&flag, 1);
 	zend_hash_index_update(D_G(object_dirty_flags), Z_OBJ_P(object)->handle, &flag);
-	zend_std_write_property(object, member, value, cache_slot);
+}
+
+void doctrine_write_property(zval *object, zval *member, zval *value, void **cache_slot)
+{
+	// Set the object's dirty flag
+	set_object_dirty(object);
+	zend_std_obj_handlers->write_property(object, member, value, cache_slot);
+}
+
+void doctrine_dtor_obj(zend_object *object)
+{
+	// Remove the object's dirty flag prior to it's destruction
+	zend_hash_index_del(D_G(object_dirty_flags), object->handle);
+	zend_std_obj_handlers->dtor_obj(object);
+}
+
+zval *doctrine_get_property_ptr_ptr(zval *object, zval *member, int type, void **cache_slot)
+{
+	if (type == BP_VAR_W || type == BP_VAR_RW || type == BP_VAR_UNSET) {
+		set_object_dirty(object);
+	}
+	return zend_std_obj_handlers->get_property_ptr_ptr(object, member, type, cache_slot);
+}
+
+zval *doctrine_read_property(zval *object, zval *member, int type, void **cache_slot, zval *rv)
+{
+	zval *fetched;
+	int set = 0;
+
+	if (type == BP_VAR_W || type == BP_VAR_RW || type == BP_VAR_UNSET) {
+		set_object_dirty(object);
+		set = 1;
+	}
+
+	fetched = zend_std_obj_handlers->read_property(object, member, type, cache_slot, rv);
+
+	if (!set && Z_TYPE_P(fetched) == IS_OBJECT) {
+		// If an object property is fetched, 
+		set_object_dirty(object);
+	}
+
+	return fetched;
 }
