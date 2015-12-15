@@ -134,7 +134,7 @@ zend_class_entry *generate_ce(zend_class_entry *orig_ce)
 	zval z_ce;
 
 	generated_ce = emalloc(sizeof(zend_class_entry));
-	tmp_name = zend_strpprintf(0, "%s__dctrn__", ZSTR_VAL(orig_ce->name));
+	tmp_name = strpprintf(0, "%s__dctrn__", ZSTR_VAL(orig_ce->name));
 
 	INIT_CLASS_ENTRY_EX((*generated_ce), ZSTR_VAL(tmp_name), ZSTR_LEN(tmp_name), NULL);
 
